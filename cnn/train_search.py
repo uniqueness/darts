@@ -92,13 +92,7 @@ def main():
   split = int(np.floor(args.train_portion * num_train))
 
   train_queue = torch.utils.data.DataLoader(
-      train_data, batch_size=args.batch_size,
-      sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
-      pin_memory=True, num_workers=2)
-
-  search_queue = torch.utils.data.DataLoader(
-      train_data, batch_size=args.batch_size,
-      sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]),
+      train_data, batch_size=args.batch_size*2,
       pin_memory=True, num_workers=2)
 
   valid_queue = torch.utils.data.DataLoader(
@@ -121,7 +115,7 @@ def main():
     print(F.softmax(model.alphas_reduce, dim=-1))
 
     # training
-    train_acc, train_obj, arch_grad_norm = train(train_queue, search_queue, model, architect, criterion, optimizer, lr)
+    train_acc, train_obj, arch_grad_norm = train(train_queue, model, architect, criterion, optimizer, lr)
     logging.info('train_acc %f', train_acc)
 
     # validation
@@ -131,38 +125,46 @@ def main():
     utils.save(model, os.path.join(args.save, 'weights.pt'))
 
 
-def train(train_queue, search_queue, model, architect, criterion, optimizer, lr):
+def train(train_queue, model, architect, criterion, optimizer, lr):
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
   grad = utils.AvgrageMeter()
 
-  for step, (input, target) in enumerate(train_queue):
-    model.train()
-    n = input.size(0)
+  for step, (input_train, target_train) in enumerate(train_queue):
+    for i in range(2):
+      if i == 0:
+        input, input_search = torch.chunk(input_train, 2)
+        target, target_search = torch.chunk(target_train, 2)
+      else:
+        input_search, input = torch.chunk(input_train, 2)
+        target_search, target = torch.chunk(target_train, 2)
 
-    input = Variable(input, requires_grad=False).cuda()
-    target = Variable(target, requires_grad=False).cuda(async=True)
+      model.train()
+      n = input.size(0)
 
-    input_search, target_search = next(iter(search_queue))
-    input_search = Variable(input_search, requires_grad=False).cuda()
-    target_search = Variable(target_search, requires_grad=False).cuda(async=True)
+      input = Variable(input, requires_grad=False).cuda()
+      target = Variable(target, requires_grad=False).cuda(async=True)
 
-    arch_grad_norm = architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=args.unrolled)
-    grad.update(arch_grad_norm)
+      input_search, target_search = next(iter(search_queue))
+      input_search = Variable(input_search, requires_grad=False).cuda()
+      target_search = Variable(target_search, requires_grad=False).cuda(async=True)
 
-    optimizer.zero_grad()
-    logits = model(input)
-    loss = criterion(logits, target)
+      arch_grad_norm = architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=args.unrolled)
+      grad.update(arch_grad_norm)
 
-    loss.backward()
-    nn.utils.clip_grad_norm(model.parameters(), args.grad_clip)
-    optimizer.step()
+      optimizer.zero_grad()
+      logits = model(input)
+      loss = criterion(logits, target)
 
-    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+      loss.backward()
+      nn.utils.clip_grad_norm(model.parameters(), args.grad_clip)
+      optimizer.step()
+
+      prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+      objs.update(loss.data[0], n)
+      top1.update(prec1.data[0], n)
+      top5.update(prec5.data[0], n)
 
     if step % args.report_freq == 0:
       logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
