@@ -92,7 +92,7 @@ def main():
   split = int(np.floor(args.train_portion * num_train))
 
   train_queue = torch.utils.data.DataLoader(
-      train_data, batch_size=args.batch_size*2,
+      train_data, batch_size=args.batch_size*2, shuffle=True,
       pin_memory=True, num_workers=2)
 
   valid_queue = torch.utils.data.DataLoader(
